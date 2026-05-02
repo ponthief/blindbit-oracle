@@ -14,7 +14,7 @@ require (
 	github.com/setavenger/blindbit-lib v0.0.2-0.20251019163107-1a34ab63339d
 	github.com/setavenger/go-bip352 v0.1.9-0.20250919170152-7683068d2f35
 	github.com/setavenger/go-libsecp256k1 v0.0.1-0.20250915182350-c8aa8e7d10b3
-	github.com/spf13/cobra v1.9.1
+	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.19.0
 	google.golang.org/grpc v1.75.1
 	google.golang.org/protobuf v1.36.6
@@ -83,7 +83,7 @@ require (
 	github.com/sourcegraph/conc v0.3.0 // indirect
 	github.com/spf13/afero v1.11.0 // indirect
 	github.com/spf13/cast v1.6.0 // indirect
-	github.com/spf13/pflag v1.0.6 // indirect
+	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/stretchr/testify v1.10.0 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
