@@ -109,12 +109,16 @@ Clients should call `/info` to discover which features are enabled and use the a
   "tweaks_only": false,
   "tweaks_full_basic": true,
   "tweaks_full_with_dust_filter": false,
-  "tweaks_cut_through_with_dust_filter": false
+  "tweaks_cut_through_with_dust_filter": false,
+  "max_range_blocks": 100
 }
 ```
 
 - If `tweaks_full_basic` or `tweaks_full_with_dust_filter`: use `/tweak-index`
 - If `tweaks_cut_through_with_dust_filter`: use `/tweaks`
+- If `max_range_blocks` is present and non-zero: the oracle serves the `/range/*`
+  endpoints, which fetch a span of blocks per request instead of three requests
+  per block. See [`internal/server/README.md`](internal/server/README.md).
 
 ## DiskUsage
 

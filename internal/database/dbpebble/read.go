@@ -1,9 +1,11 @@
 package dbpebble
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/cockroachdb/pebble"
@@ -11,6 +13,29 @@ import (
 	"github.com/setavenger/blindbit-lib/utils"
 	"github.com/setavenger/blindbit-oracle/internal/database"
 )
+
+// sortedTxidOrder returns the positions of txids in ascending txid order.
+//
+// The block-tx index is keyed by position in the block, so BlockTxids hands
+// back txids in block order — which is random with respect to the key order of
+// the tx and output indexes. Walking them in that order makes every lookup an
+// independent descent of the LSM tree. Walking them in txid order instead lets
+// a single iterator move forward only, so consecutive seeks land in the same
+// sstable block and the block cache is hit rather than re-entered.
+//
+// The positions, not the txids, are returned so callers can put their results
+// back into block order and keep the response identical to what per-txid
+// lookups produced.
+func sortedTxidOrder(txids [][]byte) []int {
+	order := make([]int, len(txids))
+	for i := range order {
+		order[i] = i
+	}
+	sort.Slice(order, func(a, b int) bool {
+		return bytes.Compare(txids[order[a]], txids[order[b]]) < 0
+	})
+	return order
+}
 
 // Best-chain map to test membership quickly.
 
@@ -133,13 +158,28 @@ func (s *Store) BlockTxids(blockHash []byte) ([][]byte, error) {
 	}
 	defer it.Close()
 
-	var out [][]byte
+	// Txids are carved out of a shared backing array rather than allocated one
+	// at a time. A busy block holds a few thousand transactions and this runs on
+	// every /tweaks and /utxos request, so one allocation per transaction was
+	// the single largest source of garbage in the read path.
+	const txidsPerSlab = 512
+	var slab []byte
+
+	out := make([][]byte, 0, txidsPerSlab)
 	for ok := it.First(); ok; ok = it.Next() {
-		val := make([]byte, SizeTxid)
-		copy(val, it.Value())
-		out = append(out, val)
+		v := it.Value()
+		if len(v) != SizeTxid {
+			return nil, fmt.Errorf("bad txid length %d in block index", len(v))
+		}
+		if len(slab) < SizeTxid {
+			slab = make([]byte, SizeTxid*txidsPerSlab)
+		}
+		copy(slab, v)
+		// Capped so a caller appending to one txid cannot scribble on the next.
+		out = append(out, slab[:SizeTxid:SizeTxid])
+		slab = slab[SizeTxid:]
 	}
-	return out, nil
+	return out, it.Error()
 }
 
 func (s *Store) OutputsForTx(txid []byte) ([]*database.Output, error) {
@@ -381,18 +421,93 @@ func (s *Store) fetchOutputs(
 	if err != nil {
 		return nil, err
 	}
-
-	var out []*database.Output
-	out = make([]*database.Output, 0, 100_000)
-	for _, txid := range txids {
-		outs, err := s.OutputsForTx(txid)
-		if err != nil {
-			return nil, err
-		}
-
-		out = append(out, outs...)
+	if len(txids) == 0 {
+		return nil, nil
 	}
 
+	// One iterator over the whole output index, seeked once per txid, instead
+	// of a fresh iterator per transaction. Constructing a Pebble iterator means
+	// building a merged view over the memtables and every level of the LSM, so
+	// at a few thousand transactions a block that construction cost — paid
+	// mostly for transactions that have no outputs at all — dominated this
+	// function.
+	it, err := s.DB.NewIter(&pebble.IterOptions{
+		LowerBound: []byte{KOut},
+		UpperBound: []byte{KOut + 1},
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer it.Close()
+
+	// Results are bucketed by the transaction's position in the block and
+	// flattened afterwards, so the response stays in block order even though
+	// the lookups run in txid order.
+	perTx := make([][]*database.Output, len(txids))
+	total := 0
+
+	// Same slab treatment as the txids: the outputs and their pubkeys come out
+	// of shared backing arrays rather than two allocations each.
+	const outsPerSlab = 256
+	var outSlab []database.Output
+	var pkSlab []byte
+
+	key := make([]byte, 1+SizeTxid+SizeVout)
+	key[0] = KOut
+
+	for _, pos := range sortedTxidOrder(txids) {
+		txid := txids[pos]
+		copy(key[1:1+SizeTxid], txid)
+		// vout stays zero: seek to the first output of this transaction.
+		for i := 1 + SizeTxid; i < len(key); i++ {
+			key[i] = 0
+		}
+
+		ok := it.SeekGE(key)
+		if !ok {
+			// Nothing at or after this txid in the output index. Seeks run in
+			// ascending order, so no later txid can find anything either.
+			break
+		}
+		for ; ok; ok = it.Next() {
+			k := it.Key()
+			if !bytes.Equal(k[1:1+SizeTxid], txid) {
+				break
+			}
+			v := it.Value()
+			if len(v) != SizeAmt+SizePubKey {
+				return nil, errors.New("bad out value length")
+			}
+
+			if len(outSlab) == 0 {
+				outSlab = make([]database.Output, outsPerSlab)
+			}
+			if len(pkSlab) < SizePubKey {
+				pkSlab = make([]byte, SizePubKey*outsPerSlab)
+			}
+			pk := pkSlab[:SizePubKey:SizePubKey]
+			copy(pk, v[SizeAmt:])
+			pkSlab = pkSlab[SizePubKey:]
+
+			o := &outSlab[0]
+			outSlab = outSlab[1:]
+			o.Txid = txid
+			o.Vout = binary.BigEndian.Uint32(k[1+SizeTxid:])
+			o.Amount = binary.LittleEndian.Uint64(v[:SizeAmt])
+			o.Pubkey = pk
+
+			perTx[pos] = append(perTx[pos], o)
+			total++
+		}
+	}
+	if err := it.Error(); err != nil {
+		return nil, err
+	}
+
+	out := make([]*database.Output, 0, total)
+	for _, outs := range perTx {
+		out = append(out, outs...)
+	}
 	return out, nil
 }
 
@@ -408,20 +523,66 @@ func (s *Store) TweaksForBlockAll(blockhash []byte) ([]*database.TweakRow, error
 	if err != nil {
 		return nil, err
 	}
+	if len(txids) == 0 {
+		return nil, nil
+	}
 
-	out := make([]*database.TweakRow, 0, len(txids))
-	for _, txid := range txids {
-		tweak, ok, err := s.LoadTweak(txid)
-		if err != nil {
-			return nil, err
+	// As in fetchOutputs: one iterator seeked in txid order, rather than a
+	// point lookup per transaction. Most transactions in a block carry no
+	// tweak, so most of those lookups were misses that still cost a full
+	// descent through the LSM's bloom filters and index blocks.
+	it, err := s.DB.NewIter(&pebble.IterOptions{
+		LowerBound: []byte{KTx},
+		UpperBound: []byte{KTx + 1},
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer it.Close()
+
+	// Bucketed by position so the result keeps block order.
+	rows := make([]*database.TweakRow, len(txids))
+	total := 0
+
+	const rowsPerSlab = 256
+	var rowSlab []database.TweakRow
+
+	key := make([]byte, 1+SizeTxid)
+	key[0] = KTx
+
+	for _, pos := range sortedTxidOrder(txids) {
+		txid := txids[pos]
+		copy(key[1:], txid)
+
+		if !it.SeekGE(key) {
+			break // ascending seeks: nothing left to find
 		}
-		if !ok {
-			continue
+		if !bytes.Equal(it.Key(), key) {
+			continue // this transaction has no tweak
 		}
-		row := new(database.TweakRow)
+		val := it.Value()
+		if len(val) != SizeTweak {
+			return nil, fmt.Errorf("bad tweak length %d for txid %x", len(val), txid)
+		}
+		if len(rowSlab) == 0 {
+			rowSlab = make([]database.TweakRow, rowsPerSlab)
+		}
+		row := &rowSlab[0]
+		rowSlab = rowSlab[1:]
 		copy(row.Txid[:], txid)
-		copy(row.Tweak[:], tweak)
-		out = append(out, row)
+		copy(row.Tweak[:], val)
+		rows[pos] = row
+		total++
+	}
+	if err := it.Error(); err != nil {
+		return nil, err
+	}
+
+	out := make([]*database.TweakRow, 0, total)
+	for _, row := range rows {
+		if row != nil {
+			out = append(out, row)
+		}
 	}
 	return out, nil
 }

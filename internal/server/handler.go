@@ -32,14 +32,29 @@ func (h *Handler) GetInfo(c *gin.Context) {
 		})
 		return
 	}
-	c.JSON(http.StatusOK, api.InfoResponseOracle{
-		Network:                        config.ChainToString(config.Chain),
-		Height:                         height,
-		TweaksOnly:                     config.TweaksOnly,
-		TweaksFullBasic:                config.TweakIndexFullNoDust,
-		TweaksFullWithDustFilter:       config.TweakIndexFullIncludingDust,
-		TweaksCutThroughWithDustFilter: config.TweaksCutThroughWithDust,
+	c.JSON(http.StatusOK, InfoResponse{
+		InfoResponseOracle: api.InfoResponseOracle{
+			Network:                        config.ChainToString(config.Chain),
+			Height:                         height,
+			TweaksOnly:                     config.TweaksOnly,
+			TweaksFullBasic:                config.TweakIndexFullNoDust,
+			TweaksFullWithDustFilter:       config.TweakIndexFullIncludingDust,
+			TweaksCutThroughWithDustFilter: config.TweaksCutThroughWithDust,
+		},
+		MaxRangeBlocks: config.MaxRangeBlocks,
 	})
+}
+
+// InfoResponse is the standard oracle info plus what this server supports
+// beyond it. The embedded struct's fields are promoted, so every field an
+// existing client reads stays exactly where it was.
+type InfoResponse struct {
+	api.InfoResponseOracle
+
+	// MaxRangeBlocks is the largest span one /range/* request may cover.
+	// Absent or zero means the oracle has no range endpoints and a client
+	// should fall back to the per-block ones.
+	MaxRangeBlocks uint32 `json:"max_range_blocks"`
 }
 
 func (h *Handler) GetBestBlockHeight(c *gin.Context) {

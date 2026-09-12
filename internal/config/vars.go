@@ -59,17 +59,36 @@ var (
 
 	// SyncHeadersMaxPerCall how many headers will maximally be requested in one batched RPC call
 	SyncHeadersMaxPerCall uint32 = 10_000
-	// MaxParallelRequests sets how many RPC calls will be made in parallel to the Node
-	MaxParallelRequests uint16 = 2
-	// MaxParallelTweakComputations number of parallel processes which will be spawned in order to compute the tweaks for a given block
-	MaxParallelTweakComputations = 2
 
 	// We default to max num cores - 2
 	MaxCPUCores = max(1, runtime.NumCPU()-2)
 
+	// MaxParallelRequests sets how many RPC calls will be made in parallel to the Node.
+	// Waiting on the node, not computing, so it is worth running ahead of the
+	// core count — the handlers below can only work on blocks that have landed.
+	// Bounded by the node's own rpcworkqueue; lower it if the node starts
+	// refusing calls.
+	MaxParallelRequests uint16 = uint16(max(4, MaxCPUCores*2))
+	// MaxParallelTweakComputations number of parallel processes which will be spawned in order to compute the tweaks for a given block.
+	// This is elliptic-curve work, so it scales with cores and nothing else.
+	//
+	// Both of these used to default to 2 regardless of the machine, which left
+	// an initial sync running at a fraction of the box's capacity unless the
+	// operator happened to copy the example config.
+	MaxParallelTweakComputations = MaxCPUCores
+
 	// PruneFrequency every x blocks the data will be checked and pruned
 	// possible routines: -remove utxos for 100% spent transaction
 	PruneFrequency = 72
+
+	// MaxRangeBlocks caps how many blocks one /range/* request may cover.
+	//
+	// A scanner walking the chain block by block spends nearly all of its time
+	// waiting on round trips rather than on the oracle, so the range endpoints
+	// let it ask for a span at once. The cap is what stops a single request
+	// from turning into an unbounded amount of work; responses are streamed, so
+	// it bounds latency and the client's buffer rather than the server's memory.
+	MaxRangeBlocks uint32 = 100
 )
 
 // one has to call SetDirectories otherwise config.DBPath will be empty
