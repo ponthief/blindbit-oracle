@@ -206,6 +206,54 @@ func (h *Handler) GetUtxosRange(c *gin.Context) {
 	})
 }
 
+// GetComputeIndexRange serves /compute-index for a span of blocks in one request.
+//
+// Unlike /tweaks, this carries the txid each tweak belongs to. That pairing is
+// what lets a scanner test a tweak against the outputs of its own transaction
+// rather than enumerating every output the tweak could possibly produce, which
+// is the difference between one curve operation per output and one per label
+// per sign.
+func (h *Handler) GetComputeIndexRange(c *gin.Context) {
+	start, end, ok := rangeParams(c)
+	if !ok {
+		return
+	}
+
+	h.streamBlocks(c, start, end, func(height uint32, blockhash []byte) (any, error) {
+		computeIndexItems, err := h.db.FetchComputeIndex(height)
+		if err != nil {
+			return nil, err
+		}
+
+		indexItems := make([]ComputeIndexItem, 0, len(computeIndexItems))
+		for _, item := range computeIndexItems {
+			if item == nil {
+				continue
+			}
+			var outputsShort OutputsShort
+			data := item.OutputsShort
+			for i := 0; i+8 <= len(data); i += 8 {
+				var outputBytes [8]byte
+				copy(outputBytes[:], data[i:i+8])
+				outputsShort = append(outputsShort, outputBytes)
+			}
+			indexItems = append(indexItems, ComputeIndexItem{
+				TxId:         [32]byte(item.Txid[:]),
+				Tweak:        [33]byte(item.Tweak[:]),
+				OutputsShort: outputsShort,
+			})
+		}
+
+		return ComputeIndexResponse{
+			BlockIdentifier: BlockIdentifier{
+				BlockHash:   utils.ReverseBytesCopy(blockhash),
+				BlockHeight: height,
+			},
+			Index: indexItems,
+		}, nil
+	})
+}
+
 // GetSpentOutputsRange serves /spent-outputs for a span of blocks in one request.
 func (h *Handler) GetSpentOutputsRange(c *gin.Context) {
 	start, end, ok := rangeParams(c)

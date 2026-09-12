@@ -47,6 +47,7 @@ func RunServer(handler *Handler) {
 	router.GET("/range/tweaks", handler.GetTweaksRange)
 	router.GET("/range/utxos", handler.GetUtxosRange)
 	router.GET("/range/spent-outputs", handler.GetSpentOutputsRange)
+	router.GET("/range/compute-index", handler.GetComputeIndexRange)
 
 	if err := router.Run(config.HTTPHost); err != nil {
 		logging.L.Err(err).Msg("could not run server")

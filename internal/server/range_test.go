@@ -93,8 +93,25 @@ func (f *fakeDB) TweaksForBlockCutThrough([]byte, uint32) ([]database.TweakRow, 
 	return nil, nil
 }
 func (f *fakeDB) ChainIterator(bool) (<-chan []byte, error) { return nil, nil }
-func (f *fakeDB) FetchComputeIndex(uint32) ([]*pb.ComputeIndexTxItem, error) {
-	return nil, nil
+func (f *fakeDB) FetchComputeIndex(height uint32) ([]*pb.ComputeIndexTxItem, error) {
+	if !f.has(height) {
+		return nil, nil
+	}
+	if f.failAt != 0 && height >= f.failAt {
+		return nil, fmt.Errorf("injected failure at height %d", height)
+	}
+	// One entry per block, its txid and tweak carrying the height so the test
+	// can tell blocks apart.
+	txid := make([]byte, 32)
+	txid[0] = byte(height)
+	tweak := make([]byte, 33)
+	tweak[0] = 0x02
+	tweak[1] = byte(height)
+	return []*pb.ComputeIndexTxItem{{
+		Txid:         txid,
+		Tweak:        tweak,
+		OutputsShort: make([]byte, 8),
+	}}, nil
 }
 func (f *fakeDB) BlockhashInDB([]byte) (bool, error)         { return true, nil }
 func (f *fakeDB) BatchSize() int                             { return 0 }
@@ -116,6 +133,7 @@ func newTestRouter(db database.DB) *gin.Engine {
 	r.GET("/range/tweaks", h.GetTweaksRange)
 	r.GET("/range/utxos", h.GetUtxosRange)
 	r.GET("/range/spent-outputs", h.GetSpentOutputsRange)
+	r.GET("/range/compute-index", h.GetComputeIndexRange)
 	return r
 }
 
@@ -428,5 +446,67 @@ func TestInfoAdvertisesRangeSupport(t *testing.T) {
 		if _, ok := body[key]; !ok {
 			t.Errorf("info is missing pre-existing field %q; embedding did not promote it", key)
 		}
+	}
+}
+
+// The compute-index range is what carries the txid alongside each tweak, which
+// is the pairing a reverse-matching scanner needs.
+func TestComputeIndexRange(t *testing.T) {
+	config.MaxRangeBlocks = 100
+	r := newTestRouter(&fakeDB{firstHeight: 100, lastHeight: 104})
+
+	w := do(t, r, "/range/compute-index?start=100&end=104")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	var body struct {
+		Blocks []struct {
+			BlockIdentifier struct {
+				BlockHeight uint32 `json:"block_height"`
+			} `json:"block_identifier"`
+			Index []struct {
+				Txid    string   `json:"txid"`
+				Tweak   string   `json:"tweak"`
+				Outputs []string `json:"outputs"`
+			} `json:"index"`
+		} `json:"blocks"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, w.Body.String())
+	}
+	if len(body.Blocks) != 5 {
+		t.Fatalf("got %d blocks, want 5", len(body.Blocks))
+	}
+	for i, blk := range body.Blocks {
+		want := uint32(100 + i)
+		if blk.BlockIdentifier.BlockHeight != want {
+			t.Errorf("block %d: height = %d", i, blk.BlockIdentifier.BlockHeight)
+		}
+		if len(blk.Index) != 1 {
+			t.Fatalf("block %d: %d entries, want 1", want, len(blk.Index))
+		}
+		e := blk.Index[0]
+		if len(e.Txid) != 64 {
+			t.Errorf("block %d: txid is not 32-byte hex: %q", want, e.Txid)
+		}
+		if len(e.Tweak) != 66 {
+			t.Errorf("block %d: tweak is not 33-byte hex: %q", want, e.Tweak)
+		}
+		// The fake stamps the height into both, proving per-block data.
+		txidRaw, _ := hex.DecodeString(e.Txid)
+		tweakRaw, _ := hex.DecodeString(e.Tweak)
+		if txidRaw[0] != byte(want) || tweakRaw[1] != byte(want) {
+			t.Errorf("block %d: got data for another height", want)
+		}
+	}
+}
+
+func TestComputeIndexRangeRejectsOversizedSpan(t *testing.T) {
+	config.MaxRangeBlocks = 10
+	r := newTestRouter(&fakeDB{firstHeight: 100, lastHeight: 109})
+	w := do(t, r, "/range/compute-index?start=100&end=200")
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
 	}
 }
