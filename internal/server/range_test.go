@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/setavenger/blindbit-lib/proto/pb"
@@ -282,6 +283,40 @@ func TestMidStreamFailureTruncatesRatherThanTrimming(t *testing.T) {
 	if err == nil {
 		t.Fatalf("a mid-stream failure parsed as valid JSON with %d blocks; "+
 			"a scanner would treat the missing blocks as empty", len(body.Blocks))
+	}
+}
+
+// A range ending at the top of the uint32 space must terminate.
+//
+// With a uint32 loop counter it does not: `height <= end` is always true at
+// MaxUint32, and the unindexed-height `continue` skips past any guard placed at
+// the end of the body, so height wraps to 0 and the handler grinds through
+// billions of lookups. One request, and the server is gone.
+func TestRangeAtMaxHeightTerminates(t *testing.T) {
+	config.MaxRangeBlocks = 100
+	r := newTestRouter(&fakeDB{firstHeight: 100, lastHeight: 109})
+
+	const maxUint32 = uint32(0xFFFFFFFF)
+	url := fmt.Sprintf("/range/tweaks?start=%d&end=%d", maxUint32-9, maxUint32)
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- do(t, r, url) }()
+
+	select {
+	case w := <-done:
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d", w.Code)
+		}
+		var body tweakRangeBody
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("invalid JSON: %v", err)
+		}
+		if len(body.Blocks) != 0 {
+			t.Fatalf("got %d blocks, want 0 — none of these heights are indexed",
+				len(body.Blocks))
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("handler did not return: the height counter wrapped past MaxUint32")
 	}
 }
 

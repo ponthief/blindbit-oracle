@@ -87,7 +87,12 @@ func (h *Handler) streamBlocks(
 	}
 
 	written := 0
-	for height := start; height <= end; height++ {
+	// Counted in uint64 so the loop variable cannot wrap. A uint32 counter with
+	// end at MaxUint32 never fails its condition: it overflows to 0 and starts
+	// again, and a single request turns into billions of lookups.
+	for i := uint64(start); i <= uint64(end); i++ {
+		height := uint32(i)
+
 		blockhash, err := h.db.GetBlockHashByHeight(height)
 		if err != nil {
 			logging.L.Err(err).Uint32("height", height).
@@ -120,10 +125,6 @@ func (h *Handler) streamBlocks(
 			return
 		}
 		written++
-
-		if height == end { // avoid uint32 overflow when end is MaxUint32
-			break
-		}
 	}
 
 	w.WriteString(`]}`)
