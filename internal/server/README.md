@@ -187,6 +187,77 @@ Returns complete block data with all transaction details and spent outpoints acc
 }
 ```
 
+## Range Endpoints
+
+A scanner has to look at every block between its last scan and the tip, and the
+per-block endpoints cost three HTTP round trips per block. Against a remote
+oracle those round trips dominate a scan: ten thousand blocks is thirty thousand
+requests, which is minutes of waiting regardless of how fast either end is.
+
+The range endpoints serve a span of blocks in one request:
+
+| Endpoint | Per-block equivalent |
+| --- | --- |
+| `GET /range/tweaks?start=<h>&end=<h>` | `/tweaks/:blockheight` |
+| `GET /range/utxos?start=<h>&end=<h>` | `/utxos/:blockheight` |
+| `GET /range/spent-outputs?start=<h>&end=<h>` | `/spent-outputs/:blockheight` |
+
+`start` and `end` are both inclusive. The span may not exceed the server's
+`max_range_blocks` (default 100); a larger request is rejected with `400`.
+
+**Response format** — a `blocks` array whose entries are exactly the objects the
+per-block endpoint returns, in ascending height order:
+
+```json
+{
+    "blocks": [
+        {
+            "block_identifier": {
+                "block_hash": "0000003223acbdef....",
+                "block_height": 894012
+            },
+            "index": ["03<x-only pubkey>", "02<x-only pubkey>"]
+        },
+        {
+            "block_identifier": {
+                "block_hash": "0000004471fedcba....",
+                "block_height": 894013
+            },
+            "index": ["02<x-only pubkey>"]
+        }
+    ]
+}
+```
+
+Heights the oracle has not indexed — above its sync tip, or below its
+`sync_start_height` — are **omitted** from the array rather than returned as
+empty blocks, so a client can tell "no data for you here" apart from "this block
+was never indexed". Callers should therefore key off each entry's
+`block_identifier.block_height` rather than assuming the array is contiguous.
+
+Responses are streamed. If the oracle hits a database error partway through, it
+abandons the stream without its closing bracket, so the response fails to parse
+rather than arriving as a short list that looks complete. **Clients must treat a
+JSON parse failure as a failed request and retry**; treating it as an empty or
+partial result would silently skip blocks.
+
+### Client discovery
+
+`/info` reports `max_range_blocks`. An oracle that omits the field, or reports
+`0`, has no range endpoints — fall back to the per-block routes:
+
+```json
+{
+  "network": "signet",
+  "height": 894012,
+  "tweaks_only": false,
+  "tweaks_full_basic": true,
+  "tweaks_full_with_dust_filter": false,
+  "tweaks_cut_through_with_dust_filter": false,
+  "max_range_blocks": 100
+}
+```
+
 ## Data Format Notes
 
 - **Block Hash**: 32-byte block hash represented as hex string

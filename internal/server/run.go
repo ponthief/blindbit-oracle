@@ -41,6 +41,13 @@ func RunServer(handler *Handler) {
 	router.GET("/compute-index/:blockheight", handler.GetComputeIndex)
 	router.GET("/full-block/:blockheight", handler.GetFullBlock)
 
+	// Batched equivalents of the three endpoints a scanner calls per block.
+	// Additive: the routes above are unchanged, and a client discovers these
+	// from max_range_blocks in /info.
+	router.GET("/range/tweaks", handler.GetTweaksRange)
+	router.GET("/range/utxos", handler.GetUtxosRange)
+	router.GET("/range/spent-outputs", handler.GetSpentOutputsRange)
+
 	if err := router.Run(config.HTTPHost); err != nil {
 		logging.L.Err(err).Msg("could not run server")
 	}

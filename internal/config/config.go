@@ -21,7 +21,18 @@ func LoadConfigs(pathToConfig string) {
 
 	/* set defaults */
 	viper.SetDefault("max_parallel_requests", MaxParallelRequests)
+	// Without this default viper returns 0 for an unset key, and 0 is not a
+	// slow indexer — it is a stopped one: SyncBlocks starts this many handler
+	// goroutines, so nothing drains newBlockChan and the sync makes no progress
+	// at all. The bundled example config sets the key, which is why this stayed
+	// hidden; any config written from scratch hit it.
+	viper.SetDefault("max_parallel_tweak_computations", MaxParallelTweakComputations)
 	viper.SetDefault("max_cpu_cores", MaxCPUCores)
+	viper.SetDefault("max_range_blocks", MaxRangeBlocks)
+	// Likewise unset means 0 here, which indexes from genesis instead of from
+	// BIP-352 activation — several hundred thousand blocks of work that cannot
+	// contain a silent payment.
+	viper.SetDefault("sync_start_height", SyncStartHeight)
 	viper.SetDefault("http_host", HTTPHost)
 	viper.SetDefault("grpc_host", GRPCHost)
 	viper.SetDefault("chain", "signet")
@@ -49,6 +60,7 @@ func LoadConfigs(pathToConfig string) {
 	viper.BindEnv("max_parallel_requests", "MAX_PARALLEL_REQUESTS")
 	viper.BindEnv("max_parallel_tweak_computations", "MAX_PARALLEL_TWEAK_COMPUTATIONS")
 	viper.BindEnv("max_cpu_cores", "MAX_CPU_CORES")
+	viper.BindEnv("max_range_blocks", "MAX_RANGE_BLOCKS")
 	viper.BindEnv("tweaks_only", "TWEAKS_ONLY")
 	viper.BindEnv("tweaks_full_basic", "TWEAKS_FULL_BASIC")
 	viper.BindEnv("tweaks_full_with_dust_filter", "TWEAKS_FULL_WITH_DUST_FILTER")
@@ -63,9 +75,14 @@ func LoadConfigs(pathToConfig string) {
 	LogLevel = viper.GetString("log_level")
 
 	// Performance
-	MaxParallelRequests = viper.GetUint16("max_parallel_requests")
-	MaxParallelTweakComputations = viper.GetInt("max_parallel_tweak_computations")
-	MaxCPUCores = viper.GetInt("max_cpu_cores")
+	//
+	// Clamped rather than trusted: an explicit 0 in a config file reaches here
+	// the same way an unset key used to, and every one of these values stalls
+	// the indexer at 0 — no RPC calls in flight, no tweak workers, no threads.
+	MaxParallelRequests = max(1, viper.GetUint16("max_parallel_requests"))
+	MaxParallelTweakComputations = max(1, viper.GetInt("max_parallel_tweak_computations"))
+	MaxCPUCores = max(1, viper.GetInt("max_cpu_cores"))
+	MaxRangeBlocks = max(1, viper.GetUint32("max_range_blocks"))
 
 	// RPC
 	RpcEndpoint = viper.GetString("core_rpc_endpoint")
