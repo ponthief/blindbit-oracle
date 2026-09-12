@@ -32,6 +32,7 @@ func e2eRouter(s *Store) *gin.Engine {
 	r.GET("/range/tweaks", h.GetTweaksRange)
 	r.GET("/range/utxos", h.GetUtxosRange)
 	r.GET("/range/spent-outputs", h.GetSpentOutputsRange)
+	r.GET("/range/compute-index", h.GetComputeIndexRange)
 	return r
 }
 
