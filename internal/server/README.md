@@ -201,6 +201,15 @@ The range endpoints serve a span of blocks in one request:
 | `GET /range/tweaks?start=<h>&end=<h>` | `/tweaks/:blockheight` |
 | `GET /range/utxos?start=<h>&end=<h>` | `/utxos/:blockheight` |
 | `GET /range/spent-outputs?start=<h>&end=<h>` | `/spent-outputs/:blockheight` |
+| `GET /range/compute-index?start=<h>&end=<h>` | `/compute-index/:blockheight` |
+
+`/range/compute-index` is the one a scanner should prefer. Unlike `/tweaks` it
+carries the **txid each tweak belongs to**, and that pairing is what lets a
+scanner test a tweak against the outputs of its own transaction rather than
+enumerating every output the tweak could produce. For a wallet with four labels
+that is the difference between one curve operation per output and nine per
+tweak. It is also keyed by height rather than by txid, so the oracle serves it
+with a contiguous scan instead of a seek per transaction.
 
 `start` and `end` are both inclusive. The span may not exceed the server's
 `max_range_blocks` (default 100); a larger request is rejected with `400`.
